@@ -5,16 +5,6 @@ const express = require('express');
 const app = express();
 const server = require('http').createServer(app);
 const io = require('socket.io')(server);
-const { useAzureSocketIO } = require('@azure/web-pubsub-socket.io');
-if (process.env.WEB_PUBSUB_CONNECTION_STRING) {
-    useAzureSocketIO(io, {
-        hub: 'snakeHub',
-        connectionString: process.env.WEB_PUBSUB_CONNECTION_STRING,
-    });
-    console.log('Web PubSub enabled — multi-instance sync active');
-} else {
-    console.log('Web PubSub connection string not found — running in single-instance mode');
-}
 const favicon = require('serve-favicon');
 const lessMiddleware = require('less-middleware');
 
