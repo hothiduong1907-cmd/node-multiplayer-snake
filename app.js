@@ -39,17 +39,16 @@ const KEY_VAULT_URL = 'https://kv-snake-1.vault.azure.net/';
 let cosmosContainer = null;
 let containerClient = null;
 let secretsLoaded = false;
-
 function initAzureServices() {
     const credential = new DefaultAzureCredential();
     const secretClient = new SecretClient(KEY_VAULT_URL, credential);
 
-  Promise.all([
+    Promise.all([
         secretClient.getSecret('AppEnv'),
         secretClient.getSecret('CosmosDbKey'),
         secretClient.getSecret('CosmosDbEndpoint'),
         secretClient.getSecret('StorageConnectionString'),
-]).then((results) => {
+    ]).then((results) => {
         const appEnvSecret = results[0];
         const cosmosKeySecret = results[1];
         const cosmosEndpointSecret = results[2];
@@ -75,6 +74,7 @@ function initAzureServices() {
         console.error('Lỗi khi kết nối Key Vault/Cosmos DB:', error.message);
     });
 }
+
 
 initAzureServices();
 
