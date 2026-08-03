@@ -25,12 +25,14 @@
     "supertest": "^1.2.0"
   },
   "dependencies": {
-    "@azure/web-pubsub-socket.io": "^1.2.1",
+    "@azure/identity": "^4.0.0",
+    "@azure/keyvault-secrets": "^4.7.0",
+    "@azure/cosmos": "^4.0.0",
     "express": "^4.14.0",
     "less-middleware": "^2.1.0",
     "serve-favicon": "^2.3.0",
     "socket.io": "^1.4.6",
-    "validator": "^5.7.0"
+    "validator": "^5.4.0"
   },
   "license": "MIT"
 }
