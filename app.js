@@ -49,7 +49,7 @@ function initAzureServices() {
         secretClient.getSecret('CosmosDbKey'),
         secretClient.getSecret('CosmosDbEndpoint'),
         secretClient.getSecret('StorageConnectionString'),
-    ]).then((results) => {
+]).then((results) => {
         const appEnvSecret = results[0];
         const cosmosKeySecret = results[1];
         const cosmosEndpointSecret = results[2];
