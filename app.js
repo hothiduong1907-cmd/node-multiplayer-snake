@@ -39,29 +39,29 @@ let cosmosContainer = null;
 let secretsLoaded = false;
 
 function initAzureServices() {
-    var credential = new DefaultAzureCredential();
-    var secretClient = new SecretClient(KEY_VAULT_URL, credential);
+    const credential = new DefaultAzureCredential();
+    const secretClient = new SecretClient(KEY_VAULT_URL, credential);
 
     Promise.all([
         secretClient.getSecret('AppEnv'),
         secretClient.getSecret('CosmosDbKey'),
-        secretClient.getSecret('CosmosDbEndpoint')
-    ]).then(function (results) {
-        var appEnvSecret = results[0];
-        var cosmosKeySecret = results[1];
-        var cosmosEndpointSecret = results[2];
+        secretClient.getSecret('CosmosDbEndpoint'),
+    ]).then((results) => {
+        const appEnvSecret = results[0];
+        const cosmosKeySecret = results[1];
+        const cosmosEndpointSecret = results[2];
 
         console.log('Đã đọc secret AppEnv từ Key Vault:', appEnvSecret.value);
         secretsLoaded = true;
 
-        var cosmosClient = new CosmosClient({
+        const cosmosClient = new CosmosClient({
             endpoint: cosmosEndpointSecret.value,
             key: cosmosKeySecret.value,
         });
-        var database = cosmosClient.database('SnakeDB');
+        const database = cosmosClient.database('SnakeDB');
         cosmosContainer = database.container('Leaderboard');
         console.log('Đã kết nối Cosmos DB thành công');
-    }).catch(function (error) {
+    }).catch((error) => {
         console.error('Lỗi khi kết nối Key Vault/Cosmos DB:', error.message);
     });
 }
@@ -78,34 +78,38 @@ app.get('/health', (request, response) => {
     });
 });
 
-app.post('/api/score', function (request, response) {
+app.post('/api/score', (request, response) => {
     if (!cosmosContainer) {
         return response.status(503).json({ error: 'Cosmos DB chưa kết nối' });
     }
-    var playerName = request.body.playerName;
-    var score = request.body.score;
+    const { playerName, score } = request.body;
     if (!playerName || score === undefined) {
         return response.status(400).json({ error: 'Thiếu playerName hoặc score' });
     }
-    var item = { id: playerName + '-' + Date.now(), playerName: playerName, score: score, createdAt: new Date().toISOString() };
-    cosmosContainer.items.create(item).then(function () {
-        response.json({ success: true, item: item });
-    }).catch(function (error) {
+    const item = {
+        id: `${playerName}-${Date.now()}`,
+        playerName,
+        score,
+        createdAt: new Date().toISOString(),
+    };
+    return cosmosContainer.items.create(item).then(() => {
+        response.json({ success: true, item });
+    }).catch((error) => {
         response.status(500).json({ error: error.message });
     });
 });
 
-app.get('/api/leaderboard', function (request, response) {
+app.get('/api/leaderboard', (request, response) => {
     if (!cosmosContainer) {
         return response.status(503).json({ error: 'Cosmos DB chưa kết nối' });
     }
-    cosmosContainer.items
+    return cosmosContainer.items
         .query('SELECT TOP 10 * FROM c ORDER BY c.score DESC')
         .fetchAll()
-        .then(function (result) {
+        .then((result) => {
             response.json(result.resources);
         })
-        .catch(function (error) {
+        .catch((error) => {
             response.status(500).json({ error: error.message });
         });
 });
