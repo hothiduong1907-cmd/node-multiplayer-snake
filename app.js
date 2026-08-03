@@ -9,6 +9,7 @@ const { useAzureSocketIO } = require('@azure/web-pubsub-socket.io');
 const { DefaultAzureCredential } = require('@azure/identity');
 const { SecretClient } = require('@azure/keyvault-secrets');
 const { CosmosClient } = require('@azure/cosmos');
+const { BlobServiceClient } = require('@azure/storage-blob');
 if (process.env.WEB_PUBSUB_CONNECTION_STRING) {
     useAzureSocketIO(io, {
         hub: 'snakeHub',
@@ -36,20 +37,23 @@ const gameController = new GameController();
 gameController.listen(io);
 const KEY_VAULT_URL = 'https://kv-snake-1.vault.azure.net/';
 let cosmosContainer = null;
+let containerClient = null;
 let secretsLoaded = false;
 
 function initAzureServices() {
     const credential = new DefaultAzureCredential();
     const secretClient = new SecretClient(KEY_VAULT_URL, credential);
 
-    Promise.all([
+  Promise.all([
         secretClient.getSecret('AppEnv'),
         secretClient.getSecret('CosmosDbKey'),
         secretClient.getSecret('CosmosDbEndpoint'),
+        secretClient.getSecret('StorageConnectionString'),
     ]).then((results) => {
         const appEnvSecret = results[0];
         const cosmosKeySecret = results[1];
         const cosmosEndpointSecret = results[2];
+        const storageConnStringSecret = results[3];
 
         console.log('Đã đọc secret AppEnv từ Key Vault:', appEnvSecret.value);
         secretsLoaded = true;
@@ -61,6 +65,12 @@ function initAzureServices() {
         const database = cosmosClient.database('SnakeDB');
         cosmosContainer = database.container('Leaderboard');
         console.log('Đã kết nối Cosmos DB thành công');
+
+        const blobServiceClient = BlobServiceClient.fromConnectionString(storageConnStringSecret.value);
+        containerClient = blobServiceClient.getContainerClient('game-logs');
+        containerClient.createIfNotExists().then(() => {
+            console.log('Đã kết nối Storage Account thành công');
+        });
     }).catch((error) => {
         console.error('Lỗi khi kết nối Key Vault/Cosmos DB:', error.message);
     });
@@ -75,6 +85,7 @@ app.get('/health', (request, response) => {
         status: 'ok',
         keyVaultSecretLoaded: secretsLoaded,
         cosmosConnected: cosmosContainer !== null,
+        storageConnected: containerClient !== null,
     });
 });
 
@@ -113,9 +124,22 @@ app.get('/api/leaderboard', (request, response) => {
             response.status(500).json({ error: error.message });
         });
 });
+app.post('/api/log', (request, response) => {
+    if (!containerClient) {
+        return response.status(503).json({ error: 'Storage chưa kết nối' });
+    }
+    const content = JSON.stringify({ event: request.body.event || 'test', time: new Date().toISOString() });
+    const blobName = `log-${Date.now()}.json`;
+    const blockBlobClient = containerClient.getBlockBlobClient(blobName);
+    return blockBlobClient.upload(content, content.length).then(() => {
+        response.json({ success: true, blobName });
+    }).catch((error) => {
+        response.status(500).json({ error: error.message });
+    });
+});
+
 const SERVER_PORT = process.env.PORT || 3000;
 app.set('port', SERVER_PORT);
-
 // Start Express server
 server.listen(app.get('port'), () => {
     console.log('Express server listening on port %d in %s mode', app.get('port'), app.get('env'));
