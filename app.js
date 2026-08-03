@@ -34,7 +34,7 @@ app.get('/', (request, response) => {
 // Create the main controller
 const gameController = new GameController();
 gameController.listen(io);
-const KEY_VAULT_URL = 'https://kv-snake-1907.vault.azure.net/';
+const KEY_VAULT_URL = 'https://kv-snake-1.vault.azure.net/';
 let cosmosContainer = null;
 let secretsLoaded = false;
 
