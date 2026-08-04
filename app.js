@@ -97,7 +97,7 @@ app.get('/health', (request, response) => {
         keyVaultSecretLoaded: secretsLoaded,
         cosmosConnected: cosmosContainer !== null,
         storageConnected: containerClient !== null,
-        appInsightsConnected: appInsightsConnected,
+        appInsightsConnected,
     });
 });
 
