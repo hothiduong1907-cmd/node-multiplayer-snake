@@ -1,5 +1,6 @@
 'use strict';
 const path = require('path');
+const appInsights = require('applicationinsights');
 const GameController = require('./app/controllers/game-controller');
 const express = require('express');
 const app = express();
@@ -39,6 +40,7 @@ const KEY_VAULT_URL = 'https://kv-snake-1.vault.azure.net/';
 let cosmosContainer = null;
 let containerClient = null;
 let secretsLoaded = false;
+let appInsightsConnected = false;
 function initAzureServices() {
     const credential = new DefaultAzureCredential();
     const secretClient = new SecretClient(KEY_VAULT_URL, credential);
@@ -48,11 +50,13 @@ function initAzureServices() {
         secretClient.getSecret('CosmosDbKey'),
         secretClient.getSecret('CosmosDbEndpoint'),
         secretClient.getSecret('StorageConnectionString'),
+        secretClient.getSecret('AppInsightsConnectionString'),
     ]).then((results) => {
         const appEnvSecret = results[0];
         const cosmosKeySecret = results[1];
         const cosmosEndpointSecret = results[2];
         const storageConnStringSecret = results[3];
+        const appInsightsConnStringSecret = results[4];
 
         console.log('Đã đọc secret AppEnv từ Key Vault:', appEnvSecret.value);
         secretsLoaded = true;
@@ -70,6 +74,13 @@ function initAzureServices() {
         containerClient.createIfNotExists().then(() => {
             console.log('Đã kết nối Storage Account thành công');
         });
+        appInsights.setup(appInsightsConnStringSecret.value)
+            .setAutoCollectRequests(true)
+            .setAutoCollectExceptions(true)
+            .setAutoCollectConsole(true, true)
+            .start();
+        appInsightsConnected = true;
+        console.log('Đã kết nối Application Insights thành công');
     }).catch((error) => {
         console.error('Lỗi khi kết nối Key Vault/Cosmos DB:', error.message);
     });
@@ -86,6 +97,7 @@ app.get('/health', (request, response) => {
         keyVaultSecretLoaded: secretsLoaded,
         cosmosConnected: cosmosContainer !== null,
         storageConnected: containerClient !== null,
+        appInsightsConnected: appInsightsConnected,
     });
 });
 
