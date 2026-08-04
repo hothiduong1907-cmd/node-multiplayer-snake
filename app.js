@@ -11,14 +11,20 @@ const { DefaultAzureCredential } = require('@azure/identity');
 const { SecretClient } = require('@azure/keyvault-secrets');
 const { CosmosClient } = require('@azure/cosmos');
 const { BlobServiceClient } = require('@azure/storage-blob');
-if (process.env.WEB_PUBSUB_CONNECTION_STRING) {
-    useAzureSocketIO(io, {
-        hub: 'snakeHub',
-        connectionString: process.env.WEB_PUBSUB_CONNECTION_STRING,
-    });
-    console.log('Web PubSub enabled — multi-instance sync active');
-} else {
-    console.log('Web PubSub connection string not found — running in single-instance mode');
+async function initWebPubSub() {
+    if (process.env.WEB_PUBSUB_CONNECTION_STRING) {
+        try {
+            await useAzureSocketIO(io, {
+                hub: 'snakeHub',
+                connectionString: process.env.WEB_PUBSUB_CONNECTION_STRING,
+            });
+            console.log('Web PubSub enabled — multi-instance sync active');
+        } catch (err) {
+            console.error('Lỗi khởi tạo Web PubSub:', err.message);
+        }
+    } else {
+        console.log('Web PubSub connection string not found — running in single-instance mode');
+    }
 }
 const favicon = require('serve-favicon');
 const lessMiddleware = require('less-middleware');
@@ -34,8 +40,6 @@ app.get('/', (request, response) => {
 });
 
 // Create the main controller
-const gameController = new GameController();
-gameController.listen(io);
 const KEY_VAULT_URL = 'https://kv-snake-1.vault.azure.net/';
 let cosmosContainer = null;
 let containerClient = null;
@@ -86,8 +90,6 @@ function initAzureServices() {
     });
 }
 
-
-initAzureServices();
 
 app.use(express.json());
 
@@ -152,9 +154,20 @@ app.post('/api/log', (request, response) => {
 
 const SERVER_PORT = process.env.PORT || 3000;
 app.set('port', SERVER_PORT);
-// Start Express server
-server.listen(app.get('port'), () => {
-    console.log('Express server listening on port %d in %s mode', app.get('port'), app.get('env'));
-});
+
+async function startServer() {
+    await initWebPubSub();
+
+    const gameController = new GameController();
+    gameController.listen(io);
+
+    initAzureServices(); // Key Vault/Cosmos/Storage/AppInsights — không cần chặn server start
+
+    server.listen(app.get('port'), () => {
+        console.log('Express server listening on port %d in %s mode', app.get('port'), app.get('env'));
+    });
+}
+
+startServer();
 
 module.exports = app;
