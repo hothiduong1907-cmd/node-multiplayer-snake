@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Snake Game — Leaderboard</title>
+<style>
+    body {
+        font-family: 'Courier New', monospace;
+        background: #0a0a0a;
+        color: #fff;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 40px 20px;
+    }
+    h1 {
+        color: #4ade80;
+        text-shadow: 0 0 10px #4ade80;
+    }
+    table {
+        border-collapse: collapse;
+        width: 100%;
+        max-width: 500px;
+        margin-top: 20px;
+    }
+    th, td {
+        padding: 12px 16px;
+        text-align: left;
+        border-bottom: 1px solid #333;
+    }
+    th {
+        color: #4ade80;
+        text-transform: uppercase;
+        font-size: 0.85em;
+    }
+    tr:nth-child(even) {
+        background: #1a1a1a;
+    }
+    .rank {
+        color: #facc15;
+        font-weight: bold;
+    }
+    #status {
+        color: #888;
+        font-size: 0.85em;
+        margin-top: 20px;
+    }
+</style>
+</head>
+<body>
+    <h1>🐍 Snake Game Leaderboard</h1>
+    <table id="leaderboard">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Player</th>
+                <th>Score</th>
+            </tr>
+        </thead>
+        <tbody id="leaderboard-body">
+            <tr><td colspan="3">Đang tải...</td></tr>
+        </tbody>
+    </table>
+    <div id="status">Cập nhật tự động mỗi 5 giây</div>
+
+<script>
+    // Đổi URL này thành đúng domain App Service chính của bạn
+    const API_URL = 'https://snake-game-1-fubhbsdqa6dzc8bd.indonesiacentral-01.azurewebsites.net/api/leaderboard';
+
+    async function loadLeaderboard() {
+        try {
+            const res = await fetch(API_URL);
+            const data = await res.json();
+            const tbody = document.getElementById('leaderboard-body');
+
+            if (!data.length) {
+                tbody.innerHTML = '<tr><td colspan="3">Chưa có dữ liệu</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = data.map((item, i) => `
+                <tr>
+                    <td class="rank">#${i + 1}</td>
+                    <td>${item.playerName}</td>
+                    <td>${item.score}</td>
+                </tr>
+            `).join('');
+
+            document.getElementById('status').textContent =
+                'Cập nhật lúc ' + new Date().toLocaleTimeString('vi-VN');
+        } catch (err) {
+            document.getElementById('status').textContent = 'Lỗi tải dữ liệu: ' + err.message;
+        }
+    }
+
+    loadLeaderboard();
+    setInterval(loadLeaderboard, 5000);
+</script>
+</body>
+</html>
