@@ -4,6 +4,15 @@ const appInsights = require('applicationinsights');
 const GameController = require('./app/controllers/game-controller');
 const express = require('express');
 const app = express();
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') {
+        return res.sendStatus(200);
+    }
+    next();
+});
 const server = require('http').createServer(app);
 const io = require('socket.io')(server);
 const { useAzureSocketIO } = require('@azure/web-pubsub-socket.io');
