@@ -164,11 +164,27 @@ app.post('/api/log', (request, response) => {
 const SERVER_PORT = process.env.PORT || 3000;
 app.set('port', SERVER_PORT);
 
+function saveScoreToLeaderboard(playerName, score) {
+    if (!cosmosContainer) {
+        return;
+    }
+    const item = {
+        id: `${playerName}-${Date.now()}`,
+        playerName,
+        score,
+        createdAt: new Date().toISOString(),
+    };
+    cosmosContainer.items.create(item).catch((error) => {
+        console.error('Lỗi khi lưu điểm tự động:', error.message);
+    });
+}
+
 async function startServer() {
     await initWebPubSub();
 
-    const gameController = new GameController();
+    const gameController = new GameController(saveScoreToLeaderboard);
     gameController.listen(io);
+
 
     initAzureServices(); // Key Vault/Cosmos/Storage/AppInsights — không cần chặn server start
 
