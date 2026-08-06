@@ -38,6 +38,10 @@ class PlayerStatBoard {
     increaseScore(playerId, amount) {
         this.statBoard.get(playerId).increaseScore(amount);
     }
+    
+    getScore(playerId) {
+        return this.statBoard.get(playerId).score;
+    }
 
     resetScore(playerId) {
         this.statBoard.get(playerId).resetScore();
