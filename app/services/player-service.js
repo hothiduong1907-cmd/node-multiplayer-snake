@@ -13,8 +13,8 @@ const ValidationService = require('../services/validation-service');
  */
 class PlayerService {
 
-    constructor(playerContainer, playerStatBoard, boardOccupancyService, imageService,
-            nameService, notificationService, runGameCycle) {
+   constructor(playerContainer, playerStatBoard, boardOccupancyService, imageService,
+            nameService, notificationService, runGameCycle, saveScoreToLeaderboard) {
         this.playerContainer = playerContainer;
         this.playerStatBoard = playerStatBoard;
         this.boardOccupancyService = boardOccupancyService;
@@ -22,6 +22,7 @@ class PlayerService {
         this.nameService = nameService;
         this.notificationService = notificationService;
         this.runGameCycle = runGameCycle;
+        this.saveScoreToLeaderboard = saveScoreToLeaderboard;
 
         this.colorService = new ColorService();
         this.playerSpawnService = new PlayerSpawnService(this.boardOccupancyService);
@@ -191,6 +192,10 @@ class PlayerService {
 
     respawnPlayer(playerId) {
         const player = this.playerContainer.getPlayer(playerId);
+        const finalScore = this.playerStatBoard.getScore(player.id);
+        if (finalScore > 0 && this.saveScoreToLeaderboard) {
+            this.saveScoreToLeaderboard(player.name, finalScore);
+        }
         this.playerSpawnService.setupNewSpawn(player, this.getPlayerStartLength(),
             ServerConfig.SPAWN_TURN_LEEWAY);
         this.playerStatBoard.resetScore(player.id);
