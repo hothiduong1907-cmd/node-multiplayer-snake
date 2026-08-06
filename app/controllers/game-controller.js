@@ -18,7 +18,7 @@ const PlayerStatBoard = require('../models/player-stat-board');
 
 class GameController {
 
-    constructor() {
+    constructor(saveScoreToLeaderboard) {
         // Model Containers
         this.playerContainer = new PlayerContainer();
         this.playerStatBoard = new PlayerStatBoard();
@@ -32,7 +32,8 @@ class GameController {
             this.nameService, this.notificationService);
         this.imageService = new ImageService(this.playerContainer, this.playerStatBoard, this.notificationService);
         this.playerService = new PlayerService(this.playerContainer, this.playerStatBoard, this.boardOccupancyService,
-            this.imageService, this.nameService, this.notificationService, this.runGameCycle.bind(this));
+            this.imageService, this.nameService, this.notificationService, this.runGameCycle.bind(this),
+            saveScoreToLeaderboard);
         this.adminService = new AdminService(this.playerContainer, this.foodService, this.nameService,
             this.notificationService, this.playerService);
         this.playerService.init(this.adminService.getPlayerStartLength.bind(this.adminService));
