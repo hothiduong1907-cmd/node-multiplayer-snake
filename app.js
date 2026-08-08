@@ -106,10 +106,14 @@ function initAzureServices() {
         appInsightsConnected = true;
         console.log('Đã kết nối Application Insights thành công');
 
+        console.log('[DEBUG] RedisHost raw:', JSON.stringify(redisHostSecret.value));
+        console.log('[DEBUG] RedisHost length:', redisHostSecret.value.length);
+        console.log('[DEBUG] RedisPort raw:', JSON.stringify(redisPortSecret.value));
+
         redisClient = new Redis({
-            host: redisHostSecret.value,
-            port: Number(redisPortSecret.value),
-            password: redisKeySecret.value,
+            host: redisHostSecret.value.trim(),
+            port: Number(redisPortSecret.value.trim()),
+            password: redisKeySecret.value.trim(),
             tls: {},
         });
         redisClient.on('connect', () => {
