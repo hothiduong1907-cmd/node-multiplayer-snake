@@ -20,6 +20,7 @@ const { DefaultAzureCredential } = require('@azure/identity');
 const { SecretClient } = require('@azure/keyvault-secrets');
 const { CosmosClient } = require('@azure/cosmos');
 const { BlobServiceClient } = require('@azure/storage-blob');
+const Redis = require('ioredis');
 async function initWebPubSub() {
     if (process.env.WEB_PUBSUB_CONNECTION_STRING) {
         try {
@@ -52,24 +53,34 @@ app.get('/', (request, response) => {
 const KEY_VAULT_URL = 'https://kv-snake-1.vault.azure.net/';
 let cosmosContainer = null;
 let containerClient = null;
+let redisClient = null;
+let redisConnected = false;
+const LEADERBOARD_CACHE_KEY = 'leaderboard:top10';
+const LEADERBOARD_CACHE_TTL_SECONDS = 30;
 let secretsLoaded = false;
 let appInsightsConnected = false;
 function initAzureServices() {
     const credential = new DefaultAzureCredential();
     const secretClient = new SecretClient(KEY_VAULT_URL, credential);
 
-    Promise.all([
+  Promise.all([
         secretClient.getSecret('AppEnv'),
         secretClient.getSecret('CosmosDbKey'),
         secretClient.getSecret('CosmosDbEndpoint'),
         secretClient.getSecret('StorageConnectionString'),
         secretClient.getSecret('AppInsightsConnectionString'),
+        secretClient.getSecret('RedisHost'),
+        secretClient.getSecret('RedisPort'),
+        secretClient.getSecret('RedisKey'),
     ]).then((results) => {
         const appEnvSecret = results[0];
         const cosmosKeySecret = results[1];
         const cosmosEndpointSecret = results[2];
         const storageConnStringSecret = results[3];
         const appInsightsConnStringSecret = results[4];
+        const redisHostSecret = results[5];
+        const redisPortSecret = results[6];
+        const redisKeySecret = results[7];
 
         console.log('Đã đọc secret AppEnv từ Key Vault:', appEnvSecret.value);
         secretsLoaded = true;
@@ -94,6 +105,21 @@ function initAzureServices() {
             .start();
         appInsightsConnected = true;
         console.log('Đã kết nối Application Insights thành công');
+
+        redisClient = new Redis({
+            host: redisHostSecret.value,
+            port: Number(redisPortSecret.value),
+            password: redisKeySecret.value,
+            tls: {},
+        });
+        redisClient.on('connect', () => {
+            redisConnected = true;
+            console.log('Đã kết nối Azure Managed Redis thành công');
+        });
+        redisClient.on('error', (err) => {
+            redisConnected = false;
+            console.error('Lỗi kết nối Redis:', err.message);
+        });
     }).catch((error) => {
         console.error('Lỗi khi kết nối Key Vault/Cosmos DB:', error.message);
     });
@@ -109,6 +135,7 @@ app.get('/health', (request, response) => {
         cosmosConnected: cosmosContainer !== null,
         storageConnected: containerClient !== null,
         appInsightsConnected,
+        redisConnected,
     });
 });
 
@@ -126,22 +153,50 @@ app.post('/api/score', (request, response) => {
         score,
         createdAt: new Date().toISOString(),
     };
-    return cosmosContainer.items.create(item).then(() => {
+     return cosmosContainer.items.create(item).then(() => {
+        if (redisClient && redisConnected) {
+            redisClient.del(LEADERBOARD_CACHE_KEY).catch(() => {});
+        }
         response.json({ success: true, item });
     }).catch((error) => {
         response.status(500).json({ error: error.message });
     });
 });
 
-app.get('/api/leaderboard', (request, response) => {
+app.get('/api/leaderboard', async (request, response) => {
     if (!cosmosContainer) {
         return response.status(503).json({ error: 'Cosmos DB chưa kết nối' });
     }
+
+    if (redisClient && redisConnected) {
+        try {
+            const cached = await redisClient.get(LEADERBOARD_CACHE_KEY);
+            if (cached) {
+                response.set('X-Cache', 'HIT');
+                return response.json(JSON.parse(cached));
+            }
+        } catch (error) {
+            console.error('Lỗi đọc cache Redis:', error.message);
+        }
+    }
+
     return cosmosContainer.items
         .query('SELECT TOP 10 * FROM c ORDER BY c.score DESC')
         .fetchAll()
         .then((result) => {
+            response.set('X-Cache', 'MISS');
             response.json(result.resources);
+
+            if (redisClient && redisConnected) {
+                redisClient.set(
+                    LEADERBOARD_CACHE_KEY,
+                    JSON.stringify(result.resources),
+                    'EX',
+                    LEADERBOARD_CACHE_TTL_SECONDS
+                ).catch((error) => {
+                    console.error('Lỗi ghi cache Redis:', error.message);
+                });
+            }
         })
         .catch((error) => {
             response.status(500).json({ error: error.message });
@@ -174,7 +229,11 @@ function saveScoreToLeaderboard(playerName, score) {
         score,
         createdAt: new Date().toISOString(),
     };
-    cosmosContainer.items.create(item).catch((error) => {
+    cosmosContainer.items.create(item).then(() => {
+        if (redisClient && redisConnected) {
+            redisClient.del(LEADERBOARD_CACHE_KEY).catch(() => {});
+        }
+    }).catch((error) => {
         console.error('Lỗi khi lưu điểm tự động:', error.message);
     });
 }
