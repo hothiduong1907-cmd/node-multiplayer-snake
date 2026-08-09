@@ -22,6 +22,7 @@ const { CosmosClient } = require('@azure/cosmos');
 const { BlobServiceClient } = require('@azure/storage-blob');
 const Redis = require('ioredis');
 const { EventGridPublisherClient, AzureKeyCredential } = require('@azure/eventgrid');
+const { EmailClient } = require('@azure/communication-email');
 async function initWebPubSub() {
     if (process.env.WEB_PUBSUB_CONNECTION_STRING) {
         try {
@@ -60,6 +61,9 @@ let eventGridClient = null;
 let eventGridConnected = false;
 let translatorConfig = null;
 let translatorConnected = false;
+let emailClient = null;
+let emailSenderAddress = null;
+let communicationConnected = false;
 const LEADERBOARD_CACHE_KEY = 'leaderboard:top10';
 const LEADERBOARD_CACHE_TTL_SECONDS = 30;
 let secretsLoaded = false;
@@ -82,6 +86,8 @@ function initAzureServices() {
         secretClient.getSecret('TranslatorKey'),
         secretClient.getSecret('TranslatorEndpoint'),
         secretClient.getSecret('TranslatorRegion'),
+        secretClient.getSecret('CommunicationConnectionString'),
+        secretClient.getSecret('CommunicationSenderAddress'),
     ]).then((results) => {
         const appEnvSecret = results[0];
         const cosmosKeySecret = results[1];
@@ -96,6 +102,8 @@ function initAzureServices() {
         const translatorKeySecret = results[10];
         const translatorEndpointSecret = results[11];
         const translatorRegionSecret = results[12];
+        const communicationConnStringSecret = results[13];
+        const communicationSenderSecret = results[14];
 
         console.log('Đã đọc secret AppEnv từ Key Vault:', appEnvSecret.value);
         secretsLoaded = true;
@@ -154,6 +162,16 @@ function initAzureServices() {
         };
         translatorConnected = true;
         console.log('Đã cấu hình Azure AI Translator thành công');
+
+        try {
+            emailClient = new EmailClient(communicationConnStringSecret.value.trim());
+            emailSenderAddress = communicationSenderSecret.value.trim();
+            communicationConnected = true;
+            console.log('Đã khởi tạo Communication Services (Email) thành công');
+        } catch (err) {
+            communicationConnected = false;
+            console.error('Lỗi khởi tạo Communication Services:', err.message);
+        }
     }).catch((error) => {
         console.error('Lỗi khi kết nối Key Vault/Cosmos DB:', error.message);
     });
@@ -172,6 +190,7 @@ app.get('/health', (request, response) => {
         redisConnected,
         eventGridConnected,
         translatorConnected,
+        communicationConnected,
     });
 });
 
@@ -269,6 +288,11 @@ app.post('/api/webhook/high-score', (request, response) => {
                 } else {
                     console.log('[Webhook] Dịch thất bại, dùng bản gốc tiếng Anh.');
                 }
+                sendHighScoreEmail(
+                    'YOUR_EMAIL@example.com',
+                    `🎉 Kỷ lục mới: ${playerName}`,
+                    finalMessage
+                );
             });
         }
     });
@@ -332,6 +356,23 @@ async function translateText(text, toLang) {
     } catch (error) {
         console.error('Lỗi gọi Translator:', error.message);
         return null;
+    }
+}
+
+async function sendHighScoreEmail(toAddress, subject, body) {
+    if (!emailClient || !communicationConnected) {
+        return;
+    }
+    try {
+        const poller = await emailClient.beginSend({
+            senderAddress: emailSenderAddress,
+            content: { subject, plainText: body },
+            recipients: { to: [{ address: toAddress }] },
+        });
+        const result = await poller.pollUntilDone();
+        console.log('Đã gửi email thành công, status:', result.status);
+    } catch (error) {
+        console.error('Lỗi gửi email:', error.message);
     }
 }
 
