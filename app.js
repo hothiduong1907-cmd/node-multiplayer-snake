@@ -275,6 +275,7 @@ async function publishHighScoreEventIfNeeded(playerName, score) {
             .query('SELECT VALUE MAX(c.score) FROM c')
             .fetchAll();
         const currentMax = (result.resources && result.resources[0]) || 0;
+        console.log(`[DEBUG] So sánh: score=${score}, currentMax=${currentMax}, isHighScore=${score > currentMax}`);
 
         if (score > currentMax) {
             await eventGridClient.send([{
