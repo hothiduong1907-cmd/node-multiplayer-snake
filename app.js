@@ -75,6 +75,8 @@ function initAzureServices() {
         secretClient.getSecret('RedisHost'),
         secretClient.getSecret('RedisPort'),
         secretClient.getSecret('RedisKey'),
+        secretClient.getSecret('EventGridTopicEndpoint'),
+        secretClient.getSecret('EventGridTopicKey'),
     ]).then((results) => {
         const appEnvSecret = results[0];
         const cosmosKeySecret = results[1];
@@ -84,6 +86,8 @@ function initAzureServices() {
         const redisHostSecret = results[5];
         const redisPortSecret = results[6];
         const redisKeySecret = results[7];
+        const eventGridEndpointSecret = results[8];
+        const eventGridKeySecret = results[9];
 
         console.log('Đã đọc secret AppEnv từ Key Vault:', appEnvSecret.value);
         secretsLoaded = true;
@@ -123,6 +127,18 @@ function initAzureServices() {
             redisConnected = false;
             console.error('Lỗi kết nối Redis:', err.message);
         });
+        try {
+            eventGridClient = new EventGridPublisherClient(
+                eventGridEndpointSecret.value.trim(),
+                'EventGrid',
+                new AzureKeyCredential(eventGridKeySecret.value.trim())
+            );
+            eventGridConnected = true;
+            console.log('Đã khởi tạo Event Grid client thành công');
+        } catch (err) {
+            eventGridConnected = false;
+            console.error('Lỗi khởi tạo Event Grid:', err.message);
+        }
     }).catch((error) => {
         console.error('Lỗi khi kết nối Key Vault/Cosmos DB:', error.message);
     });
@@ -139,6 +155,7 @@ app.get('/health', (request, response) => {
         storageConnected: containerClient !== null,
         appInsightsConnected,
         redisConnected,
+        eventGridConnected,
     });
 });
 
@@ -205,6 +222,26 @@ app.get('/api/leaderboard', async (request, response) => {
             response.status(500).json({ error: error.message });
         });
 });
+app.post('/api/webhook/high-score', (request, response) => {
+    const events = Array.isArray(request.body) ? request.body : [request.body];
+
+    // Bước xác thực bắt buộc khi tạo Event Grid Subscription lần đầu (validation handshake)
+    const validationEvent = events.find((e) => e.eventType === 'Microsoft.EventGrid.SubscriptionValidationEvent');
+    if (validationEvent) {
+        console.log('Event Grid subscription validation received');
+        return response.json({ validationResponse: validationEvent.data.validationCode });
+    }
+
+    events.forEach((event) => {
+        if (event.eventType === 'Snake.PlayerHighScore') {
+            console.log('[Webhook] Nhận sự kiện phá kỷ lục:', JSON.stringify(event.data));
+            // Bước tiếp theo (Translator + Communication Services) sẽ được nối vào đây
+        }
+    });
+
+    response.status(200).send();
+});
+
 app.post('/api/log', (request, response) => {
     if (!containerClient) {
         return response.status(503).json({ error: 'Storage chưa kết nối' });
@@ -222,10 +259,35 @@ app.post('/api/log', (request, response) => {
 const SERVER_PORT = process.env.PORT || 3000;
 app.set('port', SERVER_PORT);
 
+async function publishHighScoreEventIfNeeded(playerName, score) {
+    if (!cosmosContainer || !eventGridClient || !eventGridConnected) {
+        return;
+    }
+    try {
+        const result = await cosmosContainer.items
+            .query('SELECT VALUE MAX(c.score) FROM c')
+            .fetchAll();
+        const currentMax = (result.resources && result.resources[0]) || 0;
+
+        if (score > currentMax) {
+            await eventGridClient.send([{
+                eventType: 'Snake.PlayerHighScore',
+                subject: `players/${playerName}`,
+                dataVersion: '1.0',
+                data: { playerName, score, previousMax: currentMax },
+            }]);
+            console.log(`Event published: ${playerName} phá kỷ lục với ${score} điểm (kỷ lục cũ: ${currentMax})`);
+        }
+    } catch (error) {
+        console.error('Lỗi publish Event Grid:', error.message);
+    }
+}
+
 function saveScoreToLeaderboard(playerName, score) {
     if (!cosmosContainer) {
         return;
     }
+    publishHighScoreEventIfNeeded(playerName, score);
     const item = {
         id: `${playerName}-${Date.now()}`,
         playerName,
