@@ -173,6 +173,7 @@ app.post('/api/score', (request, response) => {
         score,
         createdAt: new Date().toISOString(),
     };
+     publishHighScoreEventIfNeeded(playerName, score);
      return cosmosContainer.items.create(item).then(() => {
         if (redisClient && redisConnected) {
             redisClient.del(LEADERBOARD_CACHE_KEY).catch(() => {});
