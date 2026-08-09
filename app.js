@@ -21,6 +21,7 @@ const { SecretClient } = require('@azure/keyvault-secrets');
 const { CosmosClient } = require('@azure/cosmos');
 const { BlobServiceClient } = require('@azure/storage-blob');
 const Redis = require('ioredis');
+const { EventGridPublisherClient, AzureKeyCredential } = require('@azure/eventgrid');
 async function initWebPubSub() {
     if (process.env.WEB_PUBSUB_CONNECTION_STRING) {
         try {
@@ -55,6 +56,8 @@ let cosmosContainer = null;
 let containerClient = null;
 let redisClient = null;
 let redisConnected = false;
+let eventGridClient = null;
+let eventGridConnected = false;
 const LEADERBOARD_CACHE_KEY = 'leaderboard:top10';
 const LEADERBOARD_CACHE_TTL_SECONDS = 30;
 let secretsLoaded = false;
