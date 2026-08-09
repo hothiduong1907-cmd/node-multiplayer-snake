@@ -261,7 +261,13 @@ const SERVER_PORT = process.env.PORT || 3000;
 app.set('port', SERVER_PORT);
 
 async function publishHighScoreEventIfNeeded(playerName, score) {
+    console.log('[DEBUG] publishHighScoreEventIfNeeded called:', {
+        hasCosmosContainer: !!cosmosContainer,
+        hasEventGridClient: !!eventGridClient,
+        eventGridConnected,
+    });
     if (!cosmosContainer || !eventGridClient || !eventGridConnected) {
+        console.log('[DEBUG] Early return - thiếu điều kiện');
         return;
     }
     try {
