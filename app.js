@@ -21,6 +21,8 @@ const { SecretClient } = require('@azure/keyvault-secrets');
 const { CosmosClient } = require('@azure/cosmos');
 const { BlobServiceClient } = require('@azure/storage-blob');
 const Redis = require('ioredis');
+const { EventGridPublisherClient, AzureKeyCredential } = require('@azure/eventgrid');
+const { EmailClient } = require('@azure/communication-email');
 async function initWebPubSub() {
     if (process.env.WEB_PUBSUB_CONNECTION_STRING) {
         try {
@@ -55,6 +57,13 @@ let cosmosContainer = null;
 let containerClient = null;
 let redisClient = null;
 let redisConnected = false;
+let eventGridClient = null;
+let eventGridConnected = false;
+let translatorConfig = null;
+let translatorConnected = false;
+let emailClient = null;
+let emailSenderAddress = null;
+let communicationConnected = false;
 const LEADERBOARD_CACHE_KEY = 'leaderboard:top10';
 const LEADERBOARD_CACHE_TTL_SECONDS = 30;
 let secretsLoaded = false;
@@ -72,6 +81,13 @@ function initAzureServices() {
         secretClient.getSecret('RedisHost'),
         secretClient.getSecret('RedisPort'),
         secretClient.getSecret('RedisKey'),
+        secretClient.getSecret('EventGridTopicEndpoint'),
+        secretClient.getSecret('EventGridTopicKey'),
+        secretClient.getSecret('TranslatorKey'),
+        secretClient.getSecret('TranslatorEndpoint'),
+        secretClient.getSecret('TranslatorRegion'),
+        secretClient.getSecret('CommunicationConnectionString'),
+        secretClient.getSecret('CommunicationSenderAddress'),
     ]).then((results) => {
         const appEnvSecret = results[0];
         const cosmosKeySecret = results[1];
@@ -81,6 +97,13 @@ function initAzureServices() {
         const redisHostSecret = results[5];
         const redisPortSecret = results[6];
         const redisKeySecret = results[7];
+        const eventGridEndpointSecret = results[8];
+        const eventGridKeySecret = results[9];
+        const translatorKeySecret = results[10];
+        const translatorEndpointSecret = results[11];
+        const translatorRegionSecret = results[12];
+        const communicationConnStringSecret = results[13];
+        const communicationSenderSecret = results[14];
 
         console.log('Đã đọc secret AppEnv từ Key Vault:', appEnvSecret.value);
         secretsLoaded = true;
@@ -107,9 +130,9 @@ function initAzureServices() {
         console.log('Đã kết nối Application Insights thành công');
 
         redisClient = new Redis({
-            host: redisHostSecret.value,
-            port: Number(redisPortSecret.value),
-            password: redisKeySecret.value,
+            host: redisHostSecret.value.trim(),
+            port: Number(redisPortSecret.value.trim()),
+            password: redisKeySecret.value.trim(),
             tls: {},
         });
         redisClient.on('connect', () => {
@@ -120,6 +143,35 @@ function initAzureServices() {
             redisConnected = false;
             console.error('Lỗi kết nối Redis:', err.message);
         });
+        try {
+            eventGridClient = new EventGridPublisherClient(
+                eventGridEndpointSecret.value.trim(),
+                'EventGrid',
+                new AzureKeyCredential(eventGridKeySecret.value.trim())
+            );
+            eventGridConnected = true;
+            console.log('Đã khởi tạo Event Grid client thành công');
+        } catch (err) {
+            eventGridConnected = false;
+            console.error('Lỗi khởi tạo Event Grid:', err.message);
+        }
+        translatorConfig = {
+            key: translatorKeySecret.value.trim(),
+            endpoint: translatorEndpointSecret.value.trim().replace(/\/$/, ''),
+            region: translatorRegionSecret.value.trim(),
+        };
+        translatorConnected = true;
+        console.log('Đã cấu hình Azure AI Translator thành công');
+
+        try {
+            emailClient = new EmailClient(communicationConnStringSecret.value.trim());
+            emailSenderAddress = communicationSenderSecret.value.trim();
+            communicationConnected = true;
+            console.log('Đã khởi tạo Communication Services (Email) thành công');
+        } catch (err) {
+            communicationConnected = false;
+            console.error('Lỗi khởi tạo Communication Services:', err.message);
+        }
     }).catch((error) => {
         console.error('Lỗi khi kết nối Key Vault/Cosmos DB:', error.message);
     });
@@ -136,10 +188,13 @@ app.get('/health', (request, response) => {
         storageConnected: containerClient !== null,
         appInsightsConnected,
         redisConnected,
+        eventGridConnected,
+        translatorConnected,
+        communicationConnected,
     });
 });
 
-app.post('/api/score', (request, response) => {
+app.post('/api/score', async (request, response) => {
     if (!cosmosContainer) {
         return response.status(503).json({ error: 'Cosmos DB chưa kết nối' });
     }
@@ -153,14 +208,23 @@ app.post('/api/score', (request, response) => {
         score,
         createdAt: new Date().toISOString(),
     };
-     return cosmosContainer.items.create(item).then(() => {
+
+    // Đọc kỷ lục CŨ trước khi ghi điểm mới — bắt buộc phải await để tránh race condition
+    const previousMax = await getCurrentMaxScore();
+
+    try {
+        await cosmosContainer.items.create(item);
         if (redisClient && redisConnected) {
             redisClient.del(LEADERBOARD_CACHE_KEY).catch(() => {});
         }
         response.json({ success: true, item });
-    }).catch((error) => {
-        response.status(500).json({ error: error.message });
-    });
+    } catch (error) {
+        return response.status(500).json({ error: error.message });
+    }
+
+    if (score > previousMax) {
+        publishHighScoreEvent(playerName, score, previousMax);
+    }
 });
 
 app.get('/api/leaderboard', async (request, response) => {
@@ -202,6 +266,39 @@ app.get('/api/leaderboard', async (request, response) => {
             response.status(500).json({ error: error.message });
         });
 });
+app.post('/api/webhook/high-score', (request, response) => {
+    const events = Array.isArray(request.body) ? request.body : [request.body];
+
+    // Bước xác thực bắt buộc khi tạo Event Grid Subscription lần đầu (validation handshake)
+    const validationEvent = events.find((e) => e.eventType === 'Microsoft.EventGrid.SubscriptionValidationEvent');
+    if (validationEvent) {
+        console.log('Event Grid subscription validation received');
+        return response.json({ validationResponse: validationEvent.data.validationCode });
+    }
+
+    events.forEach((event) => {
+       if (event.eventType === 'Snake.PlayerHighScore') {
+            console.log('[Webhook] Nhận sự kiện phá kỷ lục:', JSON.stringify(event.data));
+            const { playerName, score } = event.data;
+            const message = `New high score: ${playerName} - ${score} points!`;
+            translateText(message, 'id').then((translated) => {
+                if (translated) {
+                    console.log(`[Webhook] Bản dịch tiếng Indonesia: "${translated}"`);
+                    // Bước tiếp theo (Communication Services gửi email) sẽ được nối vào đây
+                } else {
+                    console.log('[Webhook] Dịch thất bại, dùng bản gốc tiếng Anh.');
+                }
+                sendHighScoreEmail(
+                    'YOUR_EMAIL@example.com',
+                    `🎉 Kỷ lục mới: ${playerName}`,
+                    finalMessage
+                );
+            });
+        }
+    });
+    response.status(200).send();
+});
+
 app.post('/api/log', (request, response) => {
     if (!containerClient) {
         return response.status(503).json({ error: 'Storage chưa kết nối' });
@@ -219,23 +316,105 @@ app.post('/api/log', (request, response) => {
 const SERVER_PORT = process.env.PORT || 3000;
 app.set('port', SERVER_PORT);
 
-function saveScoreToLeaderboard(playerName, score) {
+async function getCurrentMaxScore() {
+    if (!cosmosContainer) {
+        return 0;
+    }
+    try {
+        const result = await cosmosContainer.items
+            .query('SELECT VALUE MAX(c.score) FROM c')
+            .fetchAll();
+        return (result.resources && result.resources[0]) || 0;
+    } catch (error) {
+        console.error('Lỗi đọc kỷ lục hiện tại:', error.message);
+        return 0;
+    }
+}
+
+async function translateText(text, toLang) {
+    if (!translatorConfig || !translatorConnected) {
+        return null;
+    }
+    try {
+        const url = `${translatorConfig.endpoint}/translate?api-version=3.0&to=${toLang}`;
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Ocp-Apim-Subscription-Key': translatorConfig.key,
+                'Ocp-Apim-Subscription-Region': translatorConfig.region,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify([{ Text: text }]),
+        });
+        if (!res.ok) {
+            const errText = await res.text();
+            console.error('Translator API lỗi:', res.status, errText);
+            return null;
+        }
+        const data = await res.json();
+        return data[0]?.translations[0]?.text || null;
+    } catch (error) {
+        console.error('Lỗi gọi Translator:', error.message);
+        return null;
+    }
+}
+
+async function sendHighScoreEmail(toAddress, subject, body) {
+    if (!emailClient || !communicationConnected) {
+        return;
+    }
+    try {
+        const poller = await emailClient.beginSend({
+            senderAddress: emailSenderAddress,
+            content: { subject, plainText: body },
+            recipients: { to: [{ address: toAddress }] },
+        });
+        const result = await poller.pollUntilDone();
+        console.log('Đã gửi email thành công, status:', result.status);
+    } catch (error) {
+        console.error('Lỗi gửi email:', error.message);
+    }
+}
+
+async function publishHighScoreEvent(playerName, score, previousMax) {
+    if (!eventGridClient || !eventGridConnected) {
+        return;
+    }
+    try {
+        await eventGridClient.send([{
+            eventType: 'Snake.PlayerHighScore',
+            subject: `players/${playerName}`,
+            dataVersion: '1.0',
+            data: { playerName, score, previousMax },
+        }]);
+        console.log(`Event published: ${playerName} phá kỷ lục với ${score} điểm (kỷ lục cũ: ${previousMax})`);
+    } catch (error) {
+        console.error('Lỗi publish Event Grid:', error.message);
+    }
+}
+async function saveScoreToLeaderboard(playerName, score) {
     if (!cosmosContainer) {
         return;
     }
+    const previousMax = await getCurrentMaxScore();
     const item = {
         id: `${playerName}-${Date.now()}`,
         playerName,
         score,
         createdAt: new Date().toISOString(),
     };
-    cosmosContainer.items.create(item).then(() => {
+    try {
+        await cosmosContainer.items.create(item);
         if (redisClient && redisConnected) {
             redisClient.del(LEADERBOARD_CACHE_KEY).catch(() => {});
         }
-    }).catch((error) => {
+    } catch (error) {
         console.error('Lỗi khi lưu điểm tự động:', error.message);
-    });
+        return;
+    }
+    if (score > previousMax) {
+        publishHighScoreEvent(playerName, score, previousMax);
+    }
 }
 
 async function startServer() {
