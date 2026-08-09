@@ -58,6 +58,8 @@ let redisClient = null;
 let redisConnected = false;
 let eventGridClient = null;
 let eventGridConnected = false;
+let translatorConfig = null;
+let translatorConnected = false;
 const LEADERBOARD_CACHE_KEY = 'leaderboard:top10';
 const LEADERBOARD_CACHE_TTL_SECONDS = 30;
 let secretsLoaded = false;
@@ -77,6 +79,9 @@ function initAzureServices() {
         secretClient.getSecret('RedisKey'),
         secretClient.getSecret('EventGridTopicEndpoint'),
         secretClient.getSecret('EventGridTopicKey'),
+        secretClient.getSecret('TranslatorKey'),
+        secretClient.getSecret('TranslatorEndpoint'),
+        secretClient.getSecret('TranslatorRegion'),
     ]).then((results) => {
         const appEnvSecret = results[0];
         const cosmosKeySecret = results[1];
@@ -88,6 +93,9 @@ function initAzureServices() {
         const redisKeySecret = results[7];
         const eventGridEndpointSecret = results[8];
         const eventGridKeySecret = results[9];
+        const translatorKeySecret = results[10];
+        const translatorEndpointSecret = results[11];
+        const translatorRegionSecret = results[12];
 
         console.log('Đã đọc secret AppEnv từ Key Vault:', appEnvSecret.value);
         secretsLoaded = true;
@@ -139,6 +147,13 @@ function initAzureServices() {
             eventGridConnected = false;
             console.error('Lỗi khởi tạo Event Grid:', err.message);
         }
+        translatorConfig = {
+            key: translatorKeySecret.value.trim(),
+            endpoint: translatorEndpointSecret.value.trim().replace(/\/$/, ''),
+            region: translatorRegionSecret.value.trim(),
+        };
+        translatorConnected = true;
+        console.log('Đã cấu hình Azure AI Translator thành công');
     }).catch((error) => {
         console.error('Lỗi khi kết nối Key Vault/Cosmos DB:', error.message);
     });
@@ -156,6 +171,7 @@ app.get('/health', (request, response) => {
         appInsightsConnected,
         redisConnected,
         eventGridConnected,
+        translatorConnected,
     });
 });
 
@@ -242,12 +258,20 @@ app.post('/api/webhook/high-score', (request, response) => {
     }
 
     events.forEach((event) => {
-        if (event.eventType === 'Snake.PlayerHighScore') {
+       if (event.eventType === 'Snake.PlayerHighScore') {
             console.log('[Webhook] Nhận sự kiện phá kỷ lục:', JSON.stringify(event.data));
-            // Bước tiếp theo (Translator + Communication Services) sẽ được nối vào đây
+            const { playerName, score } = event.data;
+            const message = `New high score: ${playerName} - ${score} points!`;
+            translateText(message, 'id').then((translated) => {
+                if (translated) {
+                    console.log(`[Webhook] Bản dịch tiếng Indonesia: "${translated}"`);
+                    // Bước tiếp theo (Communication Services gửi email) sẽ được nối vào đây
+                } else {
+                    console.log('[Webhook] Dịch thất bại, dùng bản gốc tiếng Anh.');
+                }
+            });
         }
     });
-
     response.status(200).send();
 });
 
@@ -280,6 +304,34 @@ async function getCurrentMaxScore() {
     } catch (error) {
         console.error('Lỗi đọc kỷ lục hiện tại:', error.message);
         return 0;
+    }
+}
+
+async function translateText(text, toLang) {
+    if (!translatorConfig || !translatorConnected) {
+        return null;
+    }
+    try {
+        const url = `${translatorConfig.endpoint}/translate?api-version=3.0&to=${toLang}`;
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Ocp-Apim-Subscription-Key': translatorConfig.key,
+                'Ocp-Apim-Subscription-Region': translatorConfig.region,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify([{ Text: text }]),
+        });
+        if (!res.ok) {
+            const errText = await res.text();
+            console.error('Translator API lỗi:', res.status, errText);
+            return null;
+        }
+        const data = await res.json();
+        return data[0]?.translations[0]?.text || null;
+    } catch (error) {
+        console.error('Lỗi gọi Translator:', error.message);
+        return null;
     }
 }
 
