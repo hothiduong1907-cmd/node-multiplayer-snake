@@ -159,7 +159,7 @@ app.get('/health', (request, response) => {
     });
 });
 
-app.post('/api/score', (request, response) => {
+app.post('/api/score', async (request, response) => {
     if (!cosmosContainer) {
         return response.status(503).json({ error: 'Cosmos DB chưa kết nối' });
     }
@@ -173,15 +173,23 @@ app.post('/api/score', (request, response) => {
         score,
         createdAt: new Date().toISOString(),
     };
-     publishHighScoreEventIfNeeded(playerName, score);
-     return cosmosContainer.items.create(item).then(() => {
+
+    // Đọc kỷ lục CŨ trước khi ghi điểm mới — bắt buộc phải await để tránh race condition
+    const previousMax = await getCurrentMaxScore();
+
+    try {
+        await cosmosContainer.items.create(item);
         if (redisClient && redisConnected) {
             redisClient.del(LEADERBOARD_CACHE_KEY).catch(() => {});
         }
         response.json({ success: true, item });
-    }).catch((error) => {
-        response.status(500).json({ error: error.message });
-    });
+    } catch (error) {
+        return response.status(500).json({ error: error.message });
+    }
+
+    if (score > previousMax) {
+        publishHighScoreEvent(playerName, score, previousMax);
+    }
 });
 
 app.get('/api/leaderboard', async (request, response) => {
@@ -260,55 +268,60 @@ app.post('/api/log', (request, response) => {
 const SERVER_PORT = process.env.PORT || 3000;
 app.set('port', SERVER_PORT);
 
-async function publishHighScoreEventIfNeeded(playerName, score) {
-    console.log('[DEBUG] publishHighScoreEventIfNeeded called:', {
-        hasCosmosContainer: !!cosmosContainer,
-        hasEventGridClient: !!eventGridClient,
-        eventGridConnected,
-    });
-    if (!cosmosContainer || !eventGridClient || !eventGridConnected) {
-        console.log('[DEBUG] Early return - thiếu điều kiện');
-        return;
+async function getCurrentMaxScore() {
+    if (!cosmosContainer) {
+        return 0;
     }
     try {
         const result = await cosmosContainer.items
             .query('SELECT VALUE MAX(c.score) FROM c')
             .fetchAll();
-        const currentMax = (result.resources && result.resources[0]) || 0;
-        console.log(`[DEBUG] So sánh: score=${score}, currentMax=${currentMax}, isHighScore=${score > currentMax}`);
+        return (result.resources && result.resources[0]) || 0;
+    } catch (error) {
+        console.error('Lỗi đọc kỷ lục hiện tại:', error.message);
+        return 0;
+    }
+}
 
-        if (score > currentMax) {
-            await eventGridClient.send([{
-                eventType: 'Snake.PlayerHighScore',
-                subject: `players/${playerName}`,
-                dataVersion: '1.0',
-                data: { playerName, score, previousMax: currentMax },
-            }]);
-            console.log(`Event published: ${playerName} phá kỷ lục với ${score} điểm (kỷ lục cũ: ${currentMax})`);
-        }
+async function publishHighScoreEvent(playerName, score, previousMax) {
+    if (!eventGridClient || !eventGridConnected) {
+        return;
+    }
+    try {
+        await eventGridClient.send([{
+            eventType: 'Snake.PlayerHighScore',
+            subject: `players/${playerName}`,
+            dataVersion: '1.0',
+            data: { playerName, score, previousMax },
+        }]);
+        console.log(`Event published: ${playerName} phá kỷ lục với ${score} điểm (kỷ lục cũ: ${previousMax})`);
     } catch (error) {
         console.error('Lỗi publish Event Grid:', error.message);
     }
 }
-
-function saveScoreToLeaderboard(playerName, score) {
+async function saveScoreToLeaderboard(playerName, score) {
     if (!cosmosContainer) {
         return;
     }
-    publishHighScoreEventIfNeeded(playerName, score);
+    const previousMax = await getCurrentMaxScore();
     const item = {
         id: `${playerName}-${Date.now()}`,
         playerName,
         score,
         createdAt: new Date().toISOString(),
     };
-    cosmosContainer.items.create(item).then(() => {
+    try {
+        await cosmosContainer.items.create(item);
         if (redisClient && redisConnected) {
             redisClient.del(LEADERBOARD_CACHE_KEY).catch(() => {});
         }
-    }).catch((error) => {
+    } catch (error) {
         console.error('Lỗi khi lưu điểm tự động:', error.message);
-    });
+        return;
+    }
+    if (score > previousMax) {
+        publishHighScoreEvent(playerName, score, previousMax);
+    }
 }
 
 async function startServer() {
