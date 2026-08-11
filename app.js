@@ -23,6 +23,7 @@ const { BlobServiceClient } = require('@azure/storage-blob');
 const Redis = require('ioredis');
 const { EventGridPublisherClient, AzureKeyCredential } = require('@azure/eventgrid');
 const { EmailClient } = require('@azure/communication-email');
+const { SearchClient, AzureKeyCredential: SearchKeyCredential } = require('@azure/search-documents');
 async function initWebPubSub() {
     if (process.env.WEB_PUBSUB_CONNECTION_STRING) {
         try {
@@ -64,6 +65,8 @@ let translatorConnected = false;
 let emailClient = null;
 let emailSenderAddress = null;
 let communicationConnected = false;
+let searchClient = null;
+let searchConnected = false;
 const LEADERBOARD_CACHE_KEY = 'leaderboard:top10';
 const LEADERBOARD_CACHE_TTL_SECONDS = 30;
 let secretsLoaded = false;
@@ -177,6 +180,25 @@ function initAzureServices() {
     });
 }
 
+function initAzureSearch() {
+    const endpoint = process.env.AZURE_SEARCH_ENDPOINT;
+    const apiKey = process.env.AZURE_SEARCH_ADMIN_KEY;
+    const indexName = process.env.AZURE_SEARCH_INDEX || 'leaderboard';
+
+    if (!endpoint || !apiKey) {
+        console.log('Azure AI Search chưa được cấu hình (thiếu AZURE_SEARCH_ENDPOINT hoặc AZURE_SEARCH_ADMIN_KEY)');
+        return;
+    }
+
+    try {
+        searchClient = new SearchClient(endpoint, indexName, new SearchKeyCredential(apiKey));
+        searchConnected = true;
+        console.log('Đã kết nối Azure AI Search thành công');
+    } catch (error) {
+        searchConnected = false;
+        console.error('Lỗi khởi tạo Azure AI Search:', error.message);
+    }
+}
 
 app.use(express.json());
 
@@ -191,6 +213,7 @@ app.get('/health', (request, response) => {
         eventGridConnected,
         translatorConnected,
         communicationConnected,
+        searchConnected,
     });
 });
 
@@ -262,10 +285,53 @@ app.get('/api/leaderboard', async (request, response) => {
                 });
             }
         })
-        .catch((error) => {
+       .catch((error) => {
             response.status(500).json({ error: error.message });
         });
 });
+
+app.get('/api/leaderboard/search', async (request, response) => {
+    if (!searchClient || !searchConnected) {
+        return response.status(503).json({ error: 'Azure AI Search chưa kết nối' });
+    }
+    const { q, minScore, level } = request.query;
+    const filterParts = [];
+    if (minScore) filterParts.push(`score ge ${Number(minScore)}`);
+    if (level) filterParts.push(`level eq '${level}'`);
+
+    try {
+        const searchResults = await searchClient.search(q ? `${q}*` : '*', {
+            queryType: 'full',
+            filter: filterParts.length ? filterParts.join(' and ') : undefined,
+            orderBy: ['score desc'],
+            top: 10,
+        });
+        const items = [];
+        for await (const result of searchResults.results) {
+            items.push(result.document);
+        }
+        response.json(items);
+    } catch (error) {
+        response.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/leaderboard/suggest', async (request, response) => {
+    if (!searchClient || !searchConnected) {
+        return response.status(503).json({ error: 'Azure AI Search chưa kết nối' });
+    }
+    const { q } = request.query;
+    if (!q) {
+        return response.json([]);
+    }
+    try {
+        const suggestions = await searchClient.suggest(q, 'playerSuggester', { top: 5 });
+        response.json(suggestions.results.map((r) => r.text));
+    } catch (error) {
+        response.status(500).json({ error: error.message });
+    }
+});
+
 app.post('/api/webhook/high-score', (request, response) => {
     const events = Array.isArray(request.body) ? request.body : [request.body];
 
@@ -412,6 +478,22 @@ async function saveScoreToLeaderboard(playerName, score) {
         console.error('Lỗi khi lưu điểm tự động:', error.message);
         return;
     }
+
+    if (searchClient && searchConnected) {
+        try {
+            await searchClient.uploadDocuments([{
+                id: item.id.replace(/[^a-zA-Z0-9_\-=]/g, '_'),
+                playerName: item.playerName,
+                score: item.score,
+                level: 'multiplayer',
+                playedAt: item.createdAt,
+                durationSec: 0,
+            }]);
+        } catch (error) {
+            console.error('Lỗi đẩy dữ liệu vào Azure Search:', error.message);
+        }
+    }
+
     if (score > previousMax) {
         publishHighScoreEvent(playerName, score, previousMax);
     }
@@ -425,7 +507,8 @@ async function startServer() {
 
 
     initAzureServices(); // Key Vault/Cosmos/Storage/AppInsights — không cần chặn server start
-
+    initAzureSearch();
+    
     server.listen(app.get('port'), () => {
         console.log('Express server listening on port %d in %s mode', app.get('port'), app.get('env'));
     });
