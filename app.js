@@ -355,7 +355,7 @@ app.post('/api/webhook/high-score', (request, response) => {
                     console.log('[Webhook] Dịch thất bại, dùng bản gốc tiếng Anh.');
                 }
                 sendHighScoreEmail(
-                    'YOUR_EMAIL@example.com',
+                    'hothiduong1907@gmail.com',
                     `🎉 Kỷ lục mới: ${playerName}`,
                     finalMessage
                 );
