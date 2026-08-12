@@ -541,7 +541,7 @@ async function startServer() {
     const gameController = new GameController(saveScoreToLeaderboard);
     gameController.listen(io);
 
-
+    initWebPubSub();
     initAzureServices(); // Key Vault/Cosmos/Storage/AppInsights — không cần chặn server start
     initAzureSearch();
     
