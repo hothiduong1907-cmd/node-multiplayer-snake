@@ -332,36 +332,72 @@ app.get('/api/leaderboard/suggest', async (request, response) => {
     }
 });
 
-app.post('/api/webhook/high-score', (request, response) => {
-    const events = Array.isArray(request.body) ? request.body : [request.body];
+app.post('/api/webhook/high-score', async (request, response) => {
+    const events = Array.isArray(request.body)
+        ? request.body
+        : [request.body];
 
-    // Bước xác thực bắt buộc khi tạo Event Grid Subscription lần đầu (validation handshake)
-    const validationEvent = events.find((e) => e.eventType === 'Microsoft.EventGrid.SubscriptionValidationEvent');
+    // Event Grid validation handshake
+    const validationEvent = events.find(
+        (e) => e.eventType === 'Microsoft.EventGrid.SubscriptionValidationEvent'
+    );
+
     if (validationEvent) {
         console.log('Event Grid subscription validation received');
-        return response.json({ validationResponse: validationEvent.data.validationCode });
+
+        return response.json({
+            validationResponse: validationEvent.data.validationCode
+        });
     }
 
-    events.forEach((event) => {
-       if (event.eventType === 'Snake.PlayerHighScore') {
-            console.log('[Webhook] Nhận sự kiện phá kỷ lục:', JSON.stringify(event.data));
-            const { playerName, score } = event.data;
-            const message = `New high score: ${playerName} - ${score} points!`;
-            translateText(message, 'id').then((translated) => {
-                if (translated) {
-                    console.log(`[Webhook] Bản dịch tiếng Indonesia: "${translated}"`);
-                    // Bước tiếp theo (Communication Services gửi email) sẽ được nối vào đây
-                } else {
-                    console.log('[Webhook] Dịch thất bại, dùng bản gốc tiếng Anh.');
-                }
-                sendHighScoreEmail(
-                    'hothiduong1907@gmail.com',
-                    `🎉 Kỷ lục mới: ${playerName}`,
-                    finalMessage
-                );
-            });
+    for (const event of events) {
+        if (event.eventType !== 'Snake.PlayerHighScore') {
+            continue;
         }
-    });
+
+        try {
+            console.log(
+                '[Webhook] Nhận sự kiện phá kỷ lục:',
+                JSON.stringify(event.data)
+            );
+
+            const { playerName, score, previousMax } = event.data;
+
+            const originalMessage =
+                `New high score: ${playerName} - ${score} points!`;
+
+            // Dịch sang tiếng Indonesia
+            const translated = await translateText(
+                originalMessage,
+                'id'
+            );
+
+            const finalMessage = translated || originalMessage;
+
+            console.log(
+                '[Webhook] Bản dịch tiếng Indonesia:',
+                finalMessage
+            );
+
+            // Gửi email qua Azure Communication Services
+            await sendHighScoreEmail(
+                'hothiduong1907@gmail.com',
+                `🎉 Kỷ lục mới: ${playerName}`,
+                finalMessage
+            );
+
+            console.log(
+                `[Webhook] Hoàn tất xử lý email cho ${playerName}`
+            );
+
+        } catch (error) {
+            console.error(
+                '[Webhook] Lỗi xử lý high score:',
+                error.message
+            );
+        }
+    }
+
     response.status(200).send();
 });
 
